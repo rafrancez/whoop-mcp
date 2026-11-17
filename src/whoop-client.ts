@@ -34,10 +34,42 @@ export class WhoopClient {
 	private readonly onTokenRefresh?: (tokens: WhoopTokens) => void;
 
 	constructor(config: WhoopClientConfig) {
-		this.clientId = config.clientId;
-		this.clientSecret = config.clientSecret;
-		this.redirectUri = config.redirectUri;
+		this.clientId = config.clientId.trim();
+		this.clientSecret = config.clientSecret.trim();
+		this.redirectUri = config.redirectUri.trim();
 		this.onTokenRefresh = config.onTokenRefresh;
+		console.error(`WHOOP client configured (client secret length: ${this.clientSecret.length})`);
+	}
+
+	// WHOOP's OAuth server may expect client credentials either in the request body
+	// (client_secret_post) or in a Basic Authorization header (client_secret_basic).
+	// Try the body first and fall back to Basic auth if the client is rejected.
+	private async postToken(params: Record<string, string>): Promise<Response> {
+		const url = `${WHOOP_AUTH_BASE}/token`;
+		const response = await fetch(url, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				...params,
+				client_id: this.clientId,
+				client_secret: this.clientSecret,
+			}),
+		});
+		if (response.status !== 401) {
+			return response;
+		}
+
+		const basic = Buffer.from(
+			`${encodeURIComponent(this.clientId)}:${encodeURIComponent(this.clientSecret)}`,
+		).toString('base64');
+		return fetch(url, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/x-www-form-urlencoded',
+				Authorization: `Basic ${basic}`,
+			},
+			body: new URLSearchParams(params),
+		});
 	}
 
 	setTokens(tokens: WhoopTokens): void {
@@ -56,20 +88,14 @@ export class WhoopClient {
 	}
 
 	async exchangeCodeForTokens(code: string): Promise<WhoopTokens> {
-		const response = await fetch(`${WHOOP_AUTH_BASE}/token`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: new URLSearchParams({
-				grant_type: 'authorization_code',
-				code,
-				client_id: this.clientId,
-				client_secret: this.clientSecret,
-				redirect_uri: this.redirectUri,
-			}),
+		const response = await this.postToken({
+			grant_type: 'authorization_code',
+			code,
+			redirect_uri: this.redirectUri,
 		});
 
 		if (!response.ok) {
-			throw new Error(`Token exchange failed: ${await response.text()}`);
+			throw new Error(`Token exchange failed (tried body and Basic auth): ${await response.text()}`);
 		}
 
 		const data = await response.json() as { access_token: string; refresh_token: string; expires_in: number };
@@ -88,15 +114,9 @@ export class WhoopClient {
 			throw new Error('No refresh token available');
 		}
 
-		const response = await fetch(`${WHOOP_AUTH_BASE}/token`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: new URLSearchParams({
-				grant_type: 'refresh_token',
-				refresh_token: this.tokens.refresh_token,
-				client_id: this.clientId,
-				client_secret: this.clientSecret,
-			}),
+		const response = await this.postToken({
+			grant_type: 'refresh_token',
+			refresh_token: this.tokens.refresh_token,
 		});
 
 		if (!response.ok) {
