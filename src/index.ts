@@ -2,7 +2,8 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import express, { type Request, type Response } from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
+import { timingSafeEqual } from 'node:crypto';
 import { WhoopClient } from './whoop-client.js';
 import { WhoopDatabase } from './database.js';
 import { WhoopSync } from './sync.js';
@@ -364,6 +365,33 @@ async function main(): Promise<void> {
 
 		app.get('/health', (_req: Request, res: Response) => {
 			res.json({ status: 'ok', authenticated: Boolean(db.getTokens()) });
+		});
+
+		// Optional password for the MCP endpoint. When MCP_API_KEY is set, every request to /mcp
+		// must send it as "Authorization: Bearer <key>" or "X-API-Key: <key>".
+		const apiKey = (process.env.MCP_API_KEY ?? '').trim();
+		if (apiKey) {
+			console.error('MCP_API_KEY is set: /mcp requires the key.');
+		} else {
+			console.error('Warning: MCP_API_KEY is not set, so /mcp is open to anyone with the URL.');
+		}
+		app.use('/mcp', (req: Request, res: Response, next: NextFunction) => {
+			if (!apiKey) {
+				next();
+				return;
+			}
+			const auth = req.headers.authorization ?? '';
+			const headerKey = req.headers['x-api-key'];
+			const provided = auth.startsWith('Bearer ')
+				? auth.slice(7).trim()
+				: (typeof headerKey === 'string' ? headerKey.trim() : '');
+			const a = Buffer.from(provided);
+			const b = Buffer.from(apiKey);
+			if (a.length !== b.length || !timingSafeEqual(a, b)) {
+				res.status(401).json({ error: 'unauthorized' });
+				return;
+			}
+			next();
 		});
 
 		app.all('/mcp', async (req: Request, res: Response) => {
