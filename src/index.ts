@@ -355,8 +355,10 @@ async function main(): Promise<void> {
 				db.saveTokens(tokens);
 				sync.syncDays(90).catch(() => {});
 				res.send('Authorization successful! You can close this window.');
-			} catch {
-				res.status(500).send('Authorization failed. Please try again.');
+			} catch (err) {
+				const detail = err instanceof Error ? err.message : String(err);
+				console.error('OAuth callback error:', detail);
+				res.status(500).type('text/plain').send(`Authorization failed: ${detail}`);
 			}
 		});
 
